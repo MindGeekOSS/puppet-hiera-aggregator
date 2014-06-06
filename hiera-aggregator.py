@@ -98,20 +98,24 @@ class HieraAggregator:
 		return json_data
 		
 
-	def merge_config(self, x,y):
-	    # store a copy of x, but overwrite with y's values where applicable         
-	    merged = dict(x,**y)
+	def merge_config(self, base, override, current_config):
 
-	    xkeys = x.keys()
+		# store a copy of the base config, but overwrite with any of override's values     
+		merged = dict(base,**override)
+		xkeys = base.keys()
 
-	    # if the value of merged[key] was overwritten with y[key]'s value           
-	    # then we need to put back any missing x[key] values                        
-	    for key in xkeys:
-		# if this key is a dictionary, recurse                                  
-		if type(x[key]) is types.DictType and y.has_key(key):
-		    merged[key] = self.merge_config(x[key],y[key])
+		if self._tracevar != None:
+			if self._tracevar in override and self._tracevar in base:
+				print "\tNOTICE: {0} overriden by {1}".format(self._tracevar, current_config) 
 
-	    return merged
+		# if the value of merged[key] was overwritten with y[key]'s value           
+		# then we need to put back any missing x[key] values                        
+		for key in xkeys:
+			# If this key is a dictionary, then execute the merge function on it again                                 
+			if type(base[key]) is types.DictType and override.has_key(key):
+			    merged[key] = self.merge_config(base[key],override[key], current_config)
+
+		return merged
 
 
 	def compute_hierarchy(self, hiera_yaml_config):
@@ -163,13 +167,10 @@ class HieraAggregator:
 
 		# If the option to merge the properties is True, then merge them before returning them
 		if merge == True:
-
 			for hf in order:
-				merged_properties = self.merge_config(merged_properties, properties[hf])
-
+				merged_properties = self.merge_config(merged_properties, properties[hf], hf)
 			return (order, merged_properties)
 		else:
-
 			return (order, properties)
 
 
@@ -208,6 +209,7 @@ if __name__ == "__main__":
 	parser.add_argument('-pm', '--puppetmaster', help='Hostname or IP of the puppet master to query', default='', required=False)
 	parser.add_argument('-hn', '--hostname', help='Name of the server for which to compile the hiera config', default='', required=False)
 	parser.add_argument('-c', '--config', help='Use a config for the necessary parameters', default='', required=False)
+	parser.add_argument('-t', '--tracevar', help='Trace how a specific var is overridden', default='', required=False)
 	tmp_args = vars(parser.parse_args())
 	args = {}
 	for a in tmp_args:
@@ -228,6 +230,9 @@ if __name__ == "__main__":
 
 	if 'hostname' in args and args['hostname'] != '':
 		conf['hostname'] = args['hostname']		
+
+	if 'tracevar' in args and args['tracevar'] != '':
+		hv._tracevar = args['tracevar']		
 
 	hv.set_config(conf)
 
@@ -260,6 +265,7 @@ if __name__ == "__main__":
 		print "NOTICE: fetching node facts from puppet master {0} for {1}".format(conf['puppet_hostname'], conf['hostname'])
 		facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': conf['hostname']})	
 		# Build a final merged list of all the config data to be applied on this host
+		print "NOTICE: Tracing config var '{0}'".format(hv._tracevar) 
 		chu = hv.build_config_hierarchy(facts, True)
 		hv.show_hierarchy_multi({conf['hostname']: chu})
 
