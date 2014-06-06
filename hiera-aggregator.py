@@ -2,8 +2,9 @@
 
 #Author: Alain Lefebvre <alain.lefebvre@mindgeek.com>     
 
-import sys, subprocess, json, paramiko, os, time, urllib2, yaml, codecs, re
+import sys, subprocess, json, paramiko, os, time, urllib2, yaml, codecs, re, argparse, types
 import pprint as pp
+from collections import defaultdict
 
 
 class HieraAggregator:
@@ -21,30 +22,30 @@ class HieraAggregator:
 		}
 
 
-	def set_config(self, conf):
+	def load_config(self, filename):
 
-		# If only a config filename is passed and the file exists, load it as the config
-		if isinstance(conf, str):
-			if not os.path.isfile(conf):
-				print "Config file {0} not found!".format(conf)
+		if isinstance(filename, str):
+			if not os.path.isfile(filename):
+				print "Config file {0} not found!".format(filename)
 				sys.exit(0)
 			else:
-				with open(conf, 'r') as content_file:
-	    				self.config = json.loads(content_file.read())
+				with open(filename, 'r') as content_file:
+	    				return json.loads(content_file.read())		
 
-		# Otherwise, use the specific config dict that was passed
+	def set_config(self, conf):
+
+
+		self.config['puppetdb_api'] = conf['puppetdb_api']
+		if 'use_ssh' in conf and int(conf['use_ssh']) == 1:
+			self.config['use_ssh'] = 1
+			self.config['private_key_path'] = conf['private_key_path']
+			self.config['username'] = conf['username']
 		else:
-			self.config['puppetdb_api'] = conf['puppetdb_api']
-			if 'use_ssh' in conf and int(conf['use_ssh']) == 1:
-				self.config['use_ssh'] = 1
-				self.config['private_key_path'] = conf['private_key_path']
-				self.config['username'] = conf['username']
-			else:
-				self.config['use_ssh'] = 0	
+			self.config['use_ssh'] = 0	
 
-			self.config['puppet_hostname'] = conf['puppet_hostname']
-			self.config['hiera_local_file_dir'] = conf['hiera_local_file_dir']
-			self.config['hiera_config'] = conf['hiera_config']
+		self.config['puppet_hostname'] = conf['puppet_hostname']
+		self.config['hiera_local_file_dir'] = conf['hiera_local_file_dir']
+		self.config['hiera_config'] = conf['hiera_config']
 
 		# Remove the trailing slash if it exists
 		if self.config['puppetdb_api'].endswith('/'):
@@ -71,7 +72,7 @@ class HieraAggregator:
 				self._ssh_connection = paramiko.SSHClient()
 				self._ssh_connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 				rsa_key = paramiko.RSAKey.from_private_key_file(self.config['private_key_path'])
-				self._ssh_connection.connect(self.config['puppet_hostname'], username=self.config['username'], pkey=rsa_key)
+				self._ssh_connection.connect(self.config['puppet_hostname'], username=self.config['username'], pkey=rsa_key, timeout=5, look_for_keys=True)
 
 			stdin, stdout, stderr = self._ssh_connection.exec_command("curl -X GET {0}".format(facter_query_url))
 			data = stdout.read()
@@ -97,6 +98,20 @@ class HieraAggregator:
 		return json_data
 		
 
+	def merge_config(self, x,y):
+	    # store a copy of x, but overwrite with y's values where applicable         
+	    merged = dict(x,**y)
+
+	    xkeys = x.keys()
+
+	    # if the value of merged[key] was overwritten with y[key]'s value           
+	    # then we need to put back any missing x[key] values                        
+	    for key in xkeys:
+		# if this key is a dictionary, recurse                                  
+		if type(x[key]) is types.DictType and y.has_key(key):
+		    merged[key] = self.merge_config(x[key],y[key])
+
+	    return merged
 
 
 	def compute_hierarchy(self, hiera_yaml_config):
@@ -148,8 +163,9 @@ class HieraAggregator:
 
 		# If the option to merge the properties is True, then merge them before returning them
 		if merge == True:
+
 			for hf in order:
-				merged_properties = dict(merged_properties, **properties[hf])
+				merged_properties = self.merge_config(merged_properties, properties[hf])
 
 			return (order, merged_properties)
 		else:
@@ -188,23 +204,41 @@ class HieraAggregator:
 if __name__ == "__main__":
 
 
-	if len(sys.argv) >= 2 and sys.argv[1] == '-h':
-		print "Usage: ./hiera-visualize [SERVER_FQDN]\n"
-		sys.exit(0)
+	parser = argparse.ArgumentParser()
+	parser.add_argument('-pm', '--puppetmaster', help='Hostname or IP of the puppet master to query', default='', required=False)
+	parser.add_argument('-hn', '--hostname', help='Name of the server for which to compile the hiera config', default='', required=False)
+	parser.add_argument('-c', '--config', help='Use a config for the necessary parameters', default='', required=False)
+	tmp_args = vars(parser.parse_args())
+	args = {}
+	for a in tmp_args:
+		if tmp_args[a] != '':
+			args[a] = tmp_args[a]
 
 	print ""
 
 	hv = HieraAggregator()
-	hv.set_config('config.json')
+
+	if 'config' in args:
+		conf = hv.load_config(args['config'])
+	else:
+		conf = hv.load_config('config.json')
+
+	if 'puppetmaster' in args and args['puppetmaster'] != '':
+		conf['puppet_hostname'] = args['puppetmaster']		
+
+	if 'hostname' in args and args['hostname'] != '':
+		conf['hostname'] = args['hostname']		
+
+	hv.set_config(conf)
 
 	# Get the list of nodes on the given puppet master
-	if len(sys.argv) == 1:
+	if len(args) == 1:
 		
 		result = {}
-		print "NOTICE: fetching node list from puppet master {0}..".format(hv.config['puppet_hostname'])
+		print "NOTICE: fetching node list from puppet master {0}".format(conf['puppet_hostname'])
 		nl = hv.query_facter({'query_type': 'node_list'})
 		total_nodes = len(nl)
-		print "NOTICE: {} nodes total".format(total_nodes)
+		print "NOTICE: {0} nodes total".format(total_nodes)
 		print "NOTICE: fetching individual node facts.."
 		i=1
 
@@ -223,11 +257,11 @@ if __name__ == "__main__":
 		hv.show_hierarchy_multi(result)
 
 	else:
-		print "NOTICE: fetching node facts for {}..".format(sys.argv[1])
-		facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': sys.argv[1]})	
+		print "NOTICE: fetching node facts from puppet master {0} for {1}".format(conf['puppet_hostname'], conf['hostname'])
+		facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': conf['hostname']})	
 		# Build a final merged list of all the config data to be applied on this host
 		chu = hv.build_config_hierarchy(facts, True)
-		hv.show_hierarchy_multi({sys.argv[1]: chu})
+		hv.show_hierarchy_multi({conf['hostname']: chu})
 
 	
 
