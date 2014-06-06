@@ -13,6 +13,7 @@ class HieraAggregator:
 	puppet_api_uri = {}
 	hierarchy = {}
 	_ssh_connection = None
+	_tracevar = None
 
 	def __init__(self):
 
