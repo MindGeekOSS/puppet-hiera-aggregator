@@ -107,7 +107,7 @@ class HieraAggregator:
 
 		if self._tracevar != None:
 			if self._tracevar in override and self._tracevar in base:
-				print "\tNOTICE: {0} overriden by {1}".format(self._tracevar, current_config) 
+				print "\tNOTICE: <<{0}>> overriden by {1}".format(self._tracevar, current_config) 
 
 		# if the value of merged[key] was overwritten with y[key]'s value           
 		# then we need to put back any missing x[key] values                        
@@ -150,7 +150,8 @@ class HieraAggregator:
 		for lvl in self.hierarchy:
 
 			if 'facts' in lvl:
-				fact_vals = []
+		
+				fact_vals = []			
 				for f in lvl['facts']:
 					if f in facts:
 						fact_vals.append(facts[f])
@@ -164,6 +165,8 @@ class HieraAggregator:
 				with open(full_path) as data_file: 
 					properties[hiera_file] = json.load(data_file)
 					order.append(hiera_file)	
+					if self._tracevar != None and self._tracevar in properties[hiera_file]:
+						print u"\t\u21B3 <<{0}>> defined in {1}".format(self._tracevar, hiera_file) 
 
 
 		# If the option to merge the properties is True, then merge them before returning them
@@ -185,7 +188,7 @@ class HieraAggregator:
 			out = []
 			prop_order, properties = results[i]
 
-			print "Host:", i
+			print "\nHost:", i
 
 			for k in prop_order:
 				tabs = u'\t'*(lvl-1)
@@ -251,8 +254,10 @@ if __name__ == "__main__":
 		for node in nl:
 			# Get the node facts
 			facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': node})
+
 			# Build a final merged list of all the config data to be applied on this host
 			chu = hv.build_config_hierarchy(facts, True)
+	
 			result[node] = chu
 			sys.stdout.write("\r%d of %d nodes complete" % (i, total_nodes))
     			sys.stdout.flush()
