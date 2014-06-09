@@ -70,10 +70,14 @@ class HieraAggregator:
 		if int(self.config['use_ssh']) == 1:
 
 			if self._ssh_connection == None:
-				self._ssh_connection = paramiko.SSHClient()
-				self._ssh_connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-				rsa_key = paramiko.RSAKey.from_private_key_file(self.config['private_key_path'])
-				self._ssh_connection.connect(self.config['puppet_hostname'], username=self.config['username'], pkey=rsa_key, timeout=5, look_for_keys=True)
+				try:
+					self._ssh_connection = paramiko.SSHClient()
+					self._ssh_connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+					rsa_key = paramiko.RSAKey.from_private_key_file(self.config['private_key_path'])
+					self._ssh_connection.connect(self.config['puppet_hostname'], username=self.config['username'], pkey=rsa_key, timeout=5, look_for_keys=True)
+				except paramiko.SSHException, e:
+					print "** ERROR: Could not initiate SSH connection to puppet master at {0} **\n".format(self.config['puppet_hostname'])
+					sys.exit(0)
 
 			stdin, stdout, stderr = self._ssh_connection.exec_command("curl -X GET {0}".format(facter_query_url))
 			data = stdout.read()
@@ -108,9 +112,7 @@ class HieraAggregator:
 		if self._tracevar != None:
 			if self._tracevar in override and self._tracevar in base:
 				print "\tNOTICE: <<{0}>> overriden by {1}".format(self._tracevar, current_config) 
-
-		# if the value of merged[key] was overwritten with y[key]'s value           
-		# then we need to put back any missing x[key] values                        
+                
 		for key in xkeys:
 			# If this key is a dictionary, then execute the merge function on it again                                 
 			if type(base[key]) is types.DictType and override.has_key(key):
@@ -166,7 +168,7 @@ class HieraAggregator:
 					properties[hiera_file] = json.load(data_file)
 					order.append(hiera_file)	
 					if self._tracevar != None and self._tracevar in properties[hiera_file]:
-						print u"\t\u21B3 <<{0}>> defined in {1}".format(self._tracevar, hiera_file) 
+						print u"\t\u21B3 Parameter <<{0}>> defined in {1}".format(self._tracevar, hiera_file) 
 
 
 		# If the option to merge the properties is True, then merge them before returning them
@@ -202,7 +204,7 @@ class HieraAggregator:
 			fo.write(json.dumps(properties, indent=4, sort_keys=True))	
 			fo.close()
 
-			print "\nResults saved to {0}\n".format(file_name)	
+			print "\nResults saved to {0}".format(file_name)	
 			print "-"*40
 		
 
@@ -210,10 +212,14 @@ if __name__ == "__main__":
 
 
 	parser = argparse.ArgumentParser()
-	parser.add_argument('-pm', '--puppetmaster', help='Hostname or IP of the puppet master to query', default='', required=False)
+	parser.add_argument('-pm', '--puppetmaster', help='Hostname or IP of the puppet master to query', default='', required=True)
 	parser.add_argument('-hn', '--hostname', help='Name of the server for which to compile the hiera config', default='', required=False)
 	parser.add_argument('-c', '--config', help='Use a config for the necessary parameters', default='', required=False)
 	parser.add_argument('-t', '--tracevar', help='Trace how a specific var is overridden', default='', required=False)
+	parser.add_argument('-u', '--ssh_user', help='Username to use for ssh connection to puppet master', default='', required=False)
+	parser.add_argument('-pk', '--ssh_key', help='Private key to use for ssh connection to puppet master', default='', required=False)
+	parser.add_argument('-hf', '--hiera_file_dir', help='Local directory of the puppet hiera files', default='', required=False)
+	parser.add_argument('-hc', '--hiera_config', help='Full path to hiera config', default='', required=False)
 	tmp_args = vars(parser.parse_args())
 	args = {}
 	for a in tmp_args:
@@ -221,6 +227,7 @@ if __name__ == "__main__":
 			args[a] = tmp_args[a]
 
 	print ""
+
 
 	hv = HieraAggregator()
 
@@ -230,52 +237,70 @@ if __name__ == "__main__":
 		conf = hv.load_config('config.json')
 
 	if 'puppetmaster' in args and args['puppetmaster'] != '':
-		conf['puppet_hostname'] = args['puppetmaster']		
+		conf['puppet_hostname'] = args['puppetmaster']	
+
 
 	if 'hostname' in args and args['hostname'] != '':
 		conf['hostname'] = args['hostname']		
 
 	if 'tracevar' in args and args['tracevar'] != '':
-		hv._tracevar = args['tracevar']		
+		hv._tracevar = args['tracevar']	
+
+		
+	if 'ssh_user' in args and args['ssh_user'] != '':
+		conf['username'] = args['ssh_user']
+
+	if 'ssh_key' in args and args['ssh_key'] != '':
+		if os.path.isfile(args['ssh_key']) == False:
+			print "** Error: Specified SSH key does not exist! **"
+			sys.exit(0)
+		conf['private_key_path'] = args['ssh_key']	
+
+	if 'hiera_file_dir' in args and args['hiera_file_dir'] != '':
+		conf['hiera_local_file_dir'] = args['hiera_file_dir']	
+
+	if 'hiera_config' in args and args['hiera_config'] != '':
+		if os.path.isfile(args['hiera_config']) == False:
+			print "** Error: Specified hiera config does not exist! **"
+			sys.exit(0)
+		conf['hiera_config'] = args['hiera_config']	
 
 	hv.set_config(conf)
 
-	# Get the list of nodes on the given puppet master
-	if len(args) == 1:
 		
-		result = {}
+	result = {}
+
+	# If the hostname wasn't passed, then fetch all the nodes from the puppet master
+	if 'hostname' not in args:
 		print "NOTICE: fetching node list from puppet master {0}".format(conf['puppet_hostname'])
 		nl = hv.query_facter({'query_type': 'node_list'})
 		total_nodes = len(nl)
-		print "NOTICE: {0} nodes total".format(total_nodes)
-		print "NOTICE: fetching individual node facts.."
-		i=1
-
-		for node in nl:
-			# Get the node facts
-			facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': node})
-
-			# Build a final merged list of all the config data to be applied on this host
-			chu = hv.build_config_hierarchy(facts, True)
-	
-			result[node] = chu
-			sys.stdout.write("\r%d of %d nodes complete" % (i, total_nodes))
-    			sys.stdout.flush()
-			i+=1
-
-		print "-"*40
-
-		hv.show_hierarchy_multi(result)
-
+		print "NOTICE: {0} nodes total\n".format(total_nodes)
+		print "------------------------------------"
 	else:
-		print "NOTICE: fetching node facts from puppet master {0} for {1}".format(conf['puppet_hostname'], conf['hostname'])
-		facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': conf['hostname']})	
-		# Build a final merged list of all the config data to be applied on this host
-		print "NOTICE: Tracing config var '{0}'".format(hv._tracevar) 
-		chu = hv.build_config_hierarchy(facts, True)
-		hv.show_hierarchy_multi({conf['hostname']: chu})
+		total_nodes = 1
+		nl = [args['hostname']]
 
-	
+	i=1
+
+	for node in nl:
+		# Get the node facts
+		print "\nFetching facts for {0}".format(node)
+		facts = hv.query_facter({'query_type': 'node_facts', 'fqdn': node})
+
+		# Build a final merged list of all the config data to be applied on this host
+		chu = hv.build_config_hierarchy(facts, True)
+
+		result[node] = chu
+		sys.stdout.write("\r\t%d of %d nodes complete" % (i, total_nodes))
+		sys.stdout.write("\n")
+		sys.stdout.flush()
+		i+=1
+
+	print "-"*40
+
+	hv.show_hierarchy_multi(result)
+
 
 
 

@@ -3,7 +3,6 @@
 	"puppetdb_api": "http://localhost:8080/",
 	"private_key_path": "[PRIVATE_KEY_PATH]",
 	"username": "[SSH_USERNAME]",
-	"puppet_hostname": "[PUPPET_HOSTNAME]",
 	"hiera_local_file_dir": "[LOCAL_HIERA_DIR]",
 	"hiera_config": "[LOCAL_HIERA_CONFIG]"
 }
